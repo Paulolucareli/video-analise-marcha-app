@@ -793,15 +793,6 @@ def render_output(video_name: str, uploaded_video) -> None:
 
 
 def render_sidebar() -> None:
-    st.sidebar.header("Projeto")
-    st.sidebar.caption("Base em evolução a partir da planilha LabMarch antiga.")
-    st.sidebar.markdown(
-        "- vídeo em coluna fixa\n"
-        "- formulário em coluna rolável\n"
-        "- setas esquerda/direita para frame a frame\n"
-        "- marcadores do ciclo em frames\n"
-        "- texto final no fim da página"
-    )
     if st.sidebar.button("Limpar formulario"):
         keys_to_reset = list(st.session_state.keys())
         for key in keys_to_reset:
