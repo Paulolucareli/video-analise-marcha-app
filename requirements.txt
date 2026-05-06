@@ -1,0 +1,5 @@
+streamlit
+python-docx
+xlrd
+opencv-python-headless
+Pillow
