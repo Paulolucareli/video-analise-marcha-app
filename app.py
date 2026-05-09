@@ -100,6 +100,17 @@ def inject_styles() -> None:
             margin-top: -0.25rem;
             margin-bottom: 0.75rem;
         }
+        .compare-panel {
+            border: 1px solid rgba(49, 51, 63, 0.14);
+            border-radius: 12px;
+            padding: 0.85rem;
+            background: #ffffff;
+        }
+        .compare-caption {
+            font-size: 0.88rem;
+            color: #5c6470;
+            margin-top: 0.25rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -184,6 +195,13 @@ def init_defaults() -> None:
         "calibration_oblique_y1": 987,
         "calibration_oblique_x2": 657,
         "calibration_oblique_y2": 911,
+        "comparison_frame": 0,
+        "comparison_left_start": 0,
+        "comparison_right_start": 0,
+        "comparison_left_fps": 30.0,
+        "comparison_right_fps": 30.0,
+        "comparison_left_total_frames": 0,
+        "comparison_right_total_frames": 0,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -291,6 +309,42 @@ def step_video_frame(delta: int) -> None:
     st.session_state.video_target_frame = min(max(0, current_frame + delta), max(0, upper_bound))
 
 
+def _comparison_upper_bound() -> int:
+    left_total = int(st.session_state.get("comparison_left_total_frames", 0) or 0)
+    right_total = int(st.session_state.get("comparison_right_total_frames", 0) or 0)
+    left_start = int(st.session_state.get("comparison_left_start", 0) or 0)
+    right_start = int(st.session_state.get("comparison_right_start", 0) or 0)
+    bounds = []
+    if left_total > left_start:
+        bounds.append(left_total - left_start - 1)
+    if right_total > right_start:
+        bounds.append(right_total - right_start - 1)
+    return max(0, min(bounds)) if bounds else 0
+
+
+def step_comparison_frame(delta: int) -> None:
+    current_frame = int(st.session_state.get("comparison_frame", 0) or 0)
+    upper_bound = _comparison_upper_bound()
+    st.session_state.comparison_frame = min(max(0, current_frame + delta), upper_bound)
+
+
+def update_comparison_metadata(uploaded_video, side: str) -> None:
+    if uploaded_video is None:
+        return
+    signature_key = f"comparison_{side}_signature"
+    upload_signature = f"{uploaded_video.name}:{uploaded_video.size}"
+    if st.session_state.get(signature_key) == upload_signature:
+        return
+
+    metadata = read_video_metadata(uploaded_video.getvalue())
+    if metadata.fps is not None:
+        st.session_state[f"comparison_{side}_fps"] = round(metadata.fps, 3)
+    if metadata.total_frames is not None:
+        st.session_state[f"comparison_{side}_total_frames"] = metadata.total_frames
+    st.session_state[signature_key] = upload_signature
+    st.session_state.comparison_frame = 0
+
+
 @st.cache_data(show_spinner=False)
 def cached_frame_preview(video_bytes: bytes, frame_index: int) -> bytes | None:
     return extract_single_frame(video_bytes, frame_index)
@@ -323,6 +377,41 @@ def render_keyboard_shortcuts() -> None:
             const buttons = Array.from(doc.querySelectorAll("button"));
             const prevButton = buttons.find((button) => button.innerText.includes("◀ 1 frame"));
             const nextButton = buttons.find((button) => button.innerText.includes("1 frame ▶"));
+
+            if (event.key === "ArrowLeft" && prevButton) {
+              event.preventDefault();
+              prevButton.click();
+            }
+            if (event.key === "ArrowRight" && nextButton) {
+              event.preventDefault();
+              nextButton.click();
+            }
+          });
+        }
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def render_comparison_keyboard_shortcuts() -> None:
+    components.html(
+        """
+        <script>
+        const doc = window.parent.document;
+        if (!window.parent.__gaitCompareArrowHandlerBound) {
+          window.parent.__gaitCompareArrowHandlerBound = true;
+          window.parent.addEventListener("keydown", function(event) {
+            const tag = (event.target && event.target.tagName ? event.target.tagName : "").toLowerCase();
+            const isEditable = tag === "input" || tag === "textarea";
+            if (isEditable) {
+              return;
+            }
+
+            const buttons = Array.from(doc.querySelectorAll("button"));
+            const prevButton = buttons.find((button) => button.innerText.includes("Comparar ◀ 1 frame"));
+            const nextButton = buttons.find((button) => button.innerText.includes("Comparar 1 frame ▶"));
 
             if (event.key === "ArrowLeft" && prevButton) {
               event.preventDefault();
@@ -792,15 +881,97 @@ def render_output(video_name: str, uploaded_video) -> None:
     )
 
 
+def _render_comparison_video_panel(uploaded_video, side: str, title: str) -> None:
+    st.markdown(f"**{title}**")
+    if uploaded_video is None:
+        st.info("Importe um vídeo para comparar.")
+        return
+
+    shared_frame = int(st.session_state.get("comparison_frame", 0) or 0)
+    start_frame = int(st.session_state.get(f"comparison_{side}_start", 0) or 0)
+    frame_index = max(0, start_frame + shared_frame)
+    fps = float(st.session_state.get(f"comparison_{side}_fps", 30.0) or 30.0)
+    total_frames = int(st.session_state.get(f"comparison_{side}_total_frames", 0) or 0)
+    time_seconds = frame_index / fps if fps > 0 else 0.0
+
+    frame_preview = cached_frame_preview(uploaded_video.getvalue(), frame_index)
+    if frame_preview is not None:
+        st.image(frame_preview, caption=f"Frame {frame_index} | {time_seconds:.3f} s", use_container_width=True)
+    else:
+        st.warning("Não consegui extrair este frame do vídeo.")
+
+    metric_cols = st.columns(3)
+    with metric_cols[0]:
+        st.metric("Frame", frame_index)
+    with metric_cols[1]:
+        st.metric("Tempo", f"{time_seconds:.3f} s")
+    with metric_cols[2]:
+        st.metric("Total", total_frames if total_frames > 0 else "-")
+
+
+def render_video_comparison_page() -> None:
+    st.title("Comparação de Vídeos")
+    st.caption("Compare dois vídeos em paralelo com avanço frame a frame sincronizado.")
+
+    upload_col1, upload_col2 = st.columns(2, gap="large")
+    with upload_col1:
+        left_video = st.file_uploader(
+            "Vídeo 1",
+            type=["mp4", "mov", "avi", "m4v", "mpeg"],
+            key="comparison_left_upload",
+        )
+    with upload_col2:
+        right_video = st.file_uploader(
+            "Vídeo 2",
+            type=["mp4", "mov", "avi", "m4v", "mpeg"],
+            key="comparison_right_upload",
+        )
+
+    update_comparison_metadata(left_video, "left")
+    update_comparison_metadata(right_video, "right")
+    upper_bound = _comparison_upper_bound()
+    current_comparison_frame = int(st.session_state.get("comparison_frame", 0) or 0)
+    if current_comparison_frame > upper_bound:
+        st.session_state.comparison_frame = upper_bound
+
+    control_cols = st.columns([1, 1, 1.1, 1.1, 1.1, 1.1], gap="small")
+    with control_cols[0]:
+        st.button("Comparar ◀ 1 frame", on_click=step_comparison_frame, args=(-1,), use_container_width=True)
+    with control_cols[1]:
+        st.button("Comparar 1 frame ▶", on_click=step_comparison_frame, args=(1,), use_container_width=True)
+    with control_cols[2]:
+        st.number_input("Frame sincronizado", min_value=0, max_value=max(0, upper_bound), step=1, key="comparison_frame")
+    with control_cols[3]:
+        st.number_input("Início vídeo 1", min_value=0, step=1, key="comparison_left_start")
+    with control_cols[4]:
+        st.number_input("Início vídeo 2", min_value=0, step=1, key="comparison_right_start")
+    with control_cols[5]:
+        st.metric("Limite comum", upper_bound if upper_bound > 0 else "-")
+
+    fps_cols = st.columns(2, gap="large")
+    with fps_cols[0]:
+        st.number_input("FPS vídeo 1", min_value=1.0, max_value=240.0, step=1.0, key="comparison_left_fps")
+    with fps_cols[1]:
+        st.number_input("FPS vídeo 2", min_value=1.0, max_value=240.0, step=1.0, key="comparison_right_fps")
+
+    render_comparison_keyboard_shortcuts()
+
+    video_col1, video_col2 = st.columns(2, gap="large")
+    with video_col1:
+        st.markdown('<div class="compare-panel">', unsafe_allow_html=True)
+        _render_comparison_video_panel(left_video, "left", "Vídeo 1")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with video_col2:
+        st.markdown('<div class="compare-panel">', unsafe_allow_html=True)
+        _render_comparison_video_panel(right_video, "right", "Vídeo 2")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_sidebar() -> None:
-    st.sidebar.header("Projeto")
-    st.sidebar.caption("Base em evolução a partir da planilha LabMarch antiga.")
-    st.sidebar.markdown(
-        "- vídeo em coluna fixa\n"
-        "- formulário em coluna rolável\n"
-        "- setas esquerda/direita para frame a frame\n"
-        "- marcadores do ciclo em frames\n"
-        "- texto final no fim da página"
+    st.sidebar.radio(
+        "Página",
+        ["Análise observacional", "Comparação de vídeos"],
+        key="app_page",
     )
     if st.sidebar.button("Limpar formulario"):
         keys_to_reset = list(st.session_state.keys())
@@ -809,10 +980,7 @@ def render_sidebar() -> None:
         st.rerun()
 
 
-def main() -> None:
-    init_defaults()
-    inject_styles()
-    render_sidebar()
+def render_analysis_page() -> None:
     render_header()
     st.markdown('<div class="center-block">', unsafe_allow_html=True)
     render_patient_block()
@@ -835,6 +1003,16 @@ def main() -> None:
     render_output(video_name, uploaded_video)
     st.markdown("</div>", unsafe_allow_html=True)
     st.caption(f"Última atualização da base: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+
+def main() -> None:
+    init_defaults()
+    inject_styles()
+    render_sidebar()
+    if st.session_state.get("app_page") == "Comparação de vídeos":
+        render_video_comparison_page()
+    else:
+        render_analysis_page()
 
 
 if __name__ == "__main__":

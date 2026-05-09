@@ -3,3 +3,4 @@ python-docx
 xlrd
 opencv-python-headless
 Pillow
+matplotlib
